@@ -107,17 +107,22 @@ def get_all_dancer_validation(dancer_prefs, all_dancer_statuses, metadata):
 def drop_from_list(dancer_name, cast_list, keep_drop):
     changes = []
     for piece in cast_list:
+        # loop through all pieces and check if that piece is in keep_drop and if it's set to drop, if yes...
         if piece['name'] in keep_drop.keys() and keep_drop[piece['name']] == 'drop':
+            # remove dancer from that cast list
             dancer_ind = [ind for ind, dancer in enumerate(piece['cast']) if dancer['name'] == dancer_name][0]
             dancer_status = piece['cast'][dancer_ind]['status']
             del piece['cast'][dancer_ind]
             changes.insert(0, {'name': dancer_name, 'piece': piece['name'], 'type': 'drop'})
+
+            # if the dancer was cast, add the next dancer from the waitlist
             if dancer_status == 'cast':
                 try:
                     waitlist_ind = [ind for ind, dancer in enumerate(piece['cast']) if dancer['status'] == 'waitlist'][0]
                     piece['cast'][waitlist_ind]['status'] = 'cast'
                     changes.insert(0, {'name': piece['cast'][waitlist_ind]['name'], 'piece': piece['name'], 'type': 'add'})
                 except IndexError:
+                    # no one on waitlist
                     continue
 
     return cast_list, changes
@@ -151,3 +156,22 @@ def drop_all_same_times(metadata, cast_list, dancer_prefs):
                     cast_overlap = set([dancer['name'] for dancer in casts[0]['cast'] if dancer['status'] == 'cast']).intersection([dancer['name'] for dancer in casts[1]['cast'] if dancer['status'] == 'cast'])
 
     return cast_list, changes
+
+
+def calculate_dancer_overlap_available_next(cast_list):
+    dancer_overlap = {}
+    allowed_next = {}
+    for cast1 in cast_list:
+        piece1 = cast1['name']
+        allowed_next[piece1] = []
+        dancer_overlap[piece1] = {}
+        for cast2 in cast_list:
+            piece2 = cast2['name']
+            if piece1 != piece2:
+                dancers1 = [dancer['name'] for dancer in cast1['cast'] if dancer['status'] == 'cast']
+                dancers2 = [dancer['name'] for dancer in cast2['cast'] if dancer['status'] == 'cast']
+                dancer_overlap[piece1][piece2] = list(set(dancers1).intersection(dancers2))
+                if len(dancer_overlap[piece1][piece2]) == 0:
+                    allowed_next[piece1].append(piece2)
+
+    return dancer_overlap, allowed_next

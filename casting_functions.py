@@ -2,6 +2,7 @@ import numpy as np
 from itertools import combinations
 import time
 from collections import Counter
+from tqdm import tqdm
 
 
 def flatten(t):
@@ -47,25 +48,21 @@ def get_current_cast_per_day(day_statuses, keep_drop=None):
     return current_cast_per_day
 
 
-def get_keep_drop(current_pref, dancer_statuses, metadata, finalize=False):
-    if finalize:
-        keep_drop, day_statuses = keep_drop_default(current_pref=current_pref, dancer_statuses=dancer_statuses, metadata=metadata)
-        keep_drop = keep_drop_finalize(current_pref=current_pref, day_statuses=day_statuses, keep_drop=keep_drop)
-    else:
-        if current_pref['max_dances'] == 1:
-            keep_drop = keep_drop_max1dance(current_pref=current_pref, dancer_statuses=dancer_statuses)
-        # elif current_pref['max_days'] == 1:
-        #     keep_drop, day_statuses = keep_drop_default(current_pref=current_pref, dancer_statuses=dancer_statuses, metadata=metadata)
-        #     keep_drop = keep_drop_max1day(keep_drop=keep_drop, day_statuses=day_statuses)
-        else:
-            # keep_drop, day_statuses = keep_drop_default(current_pref=current_pref, statuses=statuses, metadata=metadata)
-            # keep_drop = keep_drop_single_cast_days(keep_drop=keep_drop, day_statuses=day_statuses, max_days=current_pref['max_days'])
-            start = time.time()
-            keep_drop = keep_drop_loop(current_pref=current_pref, dancer_statuses=dancer_statuses, metadata=metadata)
-            end = time.time()
-            print(end-start)
+def get_keep_drop(current_pref, dancer_statuses, metadata):
+    # first run in finalize mode
+    final_keep_drop, day_statuses = keep_drop_default(current_pref=current_pref, dancer_statuses=dancer_statuses, metadata=metadata)
+    final_keep_drop = keep_drop_finalize(current_pref=current_pref, day_statuses=day_statuses, keep_drop=final_keep_drop)
 
-    return keep_drop
+    # then run in standard mode
+    if current_pref['max_dances'] == 1:
+        standard_keep_drop = keep_drop_max1dance(current_pref=current_pref, dancer_statuses=dancer_statuses)
+    else:
+        start = time.time()
+        standard_keep_drop = keep_drop_loop(current_pref=current_pref, dancer_statuses=dancer_statuses, metadata=metadata)
+        end = time.time()
+        print(end-start)
+
+    return {'finalize': final_keep_drop, 'standard': standard_keep_drop}
 
 
 def keep_drop_default(current_pref, dancer_statuses, metadata):
@@ -144,85 +141,85 @@ def keep_drop_max1dance(current_pref, dancer_statuses):
     return keep_drop
 
 
-def keep_drop_max1day(keep_drop, day_statuses):
-    # TODO: verify this works for max 1 day, 2 dances (probably some adjustments needed?)
-    max_possible_n = get_max_possible_n(day_statuses=day_statuses)
-    current_cast_per_day = get_current_cast_per_day(day_statuses=day_statuses)
+# def keep_drop_max1day(keep_drop, day_statuses):
+#     # TODO: verify this works for max 1 day, 2 dances (probably some adjustments needed?)
+#     max_possible_n = get_max_possible_n(day_statuses=day_statuses)
+#     current_cast_per_day = get_current_cast_per_day(day_statuses=day_statuses)
+#
+#     current_max_n = max(current_cast_per_day.values())
+#     current_max_n_days = [day for day, num_cast in current_cast_per_day.items() if num_cast == current_max_n]
+#     best_current_rank = 100000
+#     # for the days with the most cast current, get the best average rank
+#     for day in current_max_n_days:
+#         day_current_ranks = [min([piece_rank for piece_name, piece_status, piece_rank in statuses if piece_status == 'cast']) for statuses in day_statuses[day]
+#                              if len([piece_rank for piece_name, piece_status, piece_rank in statuses if piece_status == 'cast']) != 0]
+#         if np.mean(day_current_ranks) < best_current_rank:
+#             best_current_rank = np.mean(day_current_ranks)
+#
+#     for day, max_n in max_possible_n.items():
+#         if max_n < current_max_n:
+#             # if this day has fewer possible dances than the dancer's best day currently, drop everything from this day
+#             for piece_name, piece_status, piece_rank in flatten(day_statuses[day]):
+#                 keep_drop[piece_name] = 'drop'
+#
+#         elif max_n == current_max_n:
+#             # if this day has the same number of possible dances as the dancer's best day currently,
+#             # check the best possible average rank with
+#             day_best_ranks = [min([piece_rank for piece_name, piece_status, piece_rank in statuses]) for statuses in day_statuses[day]
+#                               if len([piece_rank for piece_name, piece_status, piece_rank in statuses]) != 0]
+#             if np.mean(sorted(day_best_ranks)[:current_max_n]) > best_current_rank and 0 not in day_best_ranks:
+#                 for piece_name, piece_status, piece_rank in flatten(day_statuses[day]):
+#                     keep_drop[piece_name] = 'drop'
+#             elif 0 < current_cast_per_day[day] < current_max_n:
+#                 # decide if we should drop the current cast piece(s) on this day, i.e.
+#                 # if we combine the current cast piece(s) with waitlist pieces from other time slots, would we keep them? if not, set to drop
+#                 all_cast_ranks = []
+#                 all_cast_pieces = []
+#                 waitlist_best_ranks = []
+#                 for statuses in day_statuses[day]:
+#                     cast_ranks = [piece_rank for piece_name, piece_status, piece_rank in statuses if piece_status == 'cast']
+#                     cast_pieces = [piece_rank for piece_name, piece_status, piece_rank in statuses if piece_status == 'cast']
+#                     if len(cast_ranks) > 0:
+#                         all_cast_ranks.append(min(cast_ranks))
+#                         all_cast_pieces.extend(cast_pieces)
+#                     else:
+#                         waitlist_ranks = [piece_rank for piece_name, piece_status, piece_rank in statuses if piece_status == 'waitlist']
+#                         if len(waitlist_ranks) > 0:
+#                             waitlist_best_ranks.append(min(waitlist_ranks))
+#
+#                 assert len(all_cast_ranks) + len(waitlist_best_ranks) == current_max_n, 'Error: wrong number of items'  # check assumption here
+#                 ranks_to_check = all_cast_ranks + waitlist_best_ranks
+#                 if np.mean(ranks_to_check) > best_current_rank and 0 not in ranks_to_check:
+#                     for piece_name in all_cast_pieces:
+#                         keep_drop[piece_name] = 'drop'
+#
+#     return keep_drop
 
-    current_max_n = max(current_cast_per_day.values())
-    current_max_n_days = [day for day, num_cast in current_cast_per_day.items() if num_cast == current_max_n]
-    best_current_rank = 100000
-    # for the days with the most cast current, get the best average rank
-    for day in current_max_n_days:
-        day_current_ranks = [min([piece_rank for piece_name, piece_status, piece_rank in statuses if piece_status == 'cast']) for statuses in day_statuses[day]
-                             if len([piece_rank for piece_name, piece_status, piece_rank in statuses if piece_status == 'cast']) != 0]
-        if np.mean(day_current_ranks) < best_current_rank:
-            best_current_rank = np.mean(day_current_ranks)
 
-    for day, max_n in max_possible_n.items():
-        if max_n < current_max_n:
-            # if this day has fewer possible dances than the dancer's best day currently, drop everything from this day
-            for piece_name, piece_status, piece_rank in flatten(day_statuses[day]):
-                keep_drop[piece_name] = 'drop'
-
-        elif max_n == current_max_n:
-            # if this day has the same number of possible dances as the dancer's best day currently,
-            # check the best possible average rank with
-            day_best_ranks = [min([piece_rank for piece_name, piece_status, piece_rank in statuses]) for statuses in day_statuses[day]
-                              if len([piece_rank for piece_name, piece_status, piece_rank in statuses]) != 0]
-            if np.mean(sorted(day_best_ranks)[:current_max_n]) > best_current_rank and 0 not in day_best_ranks:
-                for piece_name, piece_status, piece_rank in flatten(day_statuses[day]):
-                    keep_drop[piece_name] = 'drop'
-            elif 0 < current_cast_per_day[day] < current_max_n:
-                # decide if we should drop the current cast piece(s) on this day, i.e.
-                # if we combine the current cast piece(s) with waitlist pieces from other time slots, would we keep them? if not, set to drop
-                all_cast_ranks = []
-                all_cast_pieces = []
-                waitlist_best_ranks = []
-                for statuses in day_statuses[day]:
-                    cast_ranks = [piece_rank for piece_name, piece_status, piece_rank in statuses if piece_status == 'cast']
-                    cast_pieces = [piece_rank for piece_name, piece_status, piece_rank in statuses if piece_status == 'cast']
-                    if len(cast_ranks) > 0:
-                        all_cast_ranks.append(min(cast_ranks))
-                        all_cast_pieces.extend(cast_pieces)
-                    else:
-                        waitlist_ranks = [piece_rank for piece_name, piece_status, piece_rank in statuses if piece_status == 'waitlist']
-                        if len(waitlist_ranks) > 0:
-                            waitlist_best_ranks.append(min(waitlist_ranks))
-
-                assert len(all_cast_ranks) + len(waitlist_best_ranks) == current_max_n, 'Error: wrong number of items'  # check assumption here
-                ranks_to_check = all_cast_ranks + waitlist_best_ranks
-                if np.mean(ranks_to_check) > best_current_rank and 0 not in ranks_to_check:
-                    for piece_name in all_cast_pieces:
-                        keep_drop[piece_name] = 'drop'
-
-    return keep_drop
-
-
-def keep_drop_single_cast_days(keep_drop, day_statuses, max_days):
-    # TODO: combine this with second part of default function (move it out of default, and double check max1day still works)
-    max_possible_n = get_max_possible_n(day_statuses=day_statuses)
-    current_cast_per_day = get_current_cast_per_day(day_statuses=day_statuses)
-
-    if (len([day for day, n_cast in current_cast_per_day.items() if n_cast >= 1]) > max_days and
-            len([day for day, n_cast in current_cast_per_day.items() if n_cast == 1 and max_possible_n[day] == 1]) > 0):
-        daily_best_rank = {}
-        for day, statuses in day_statuses.items():
-            day_cast_ranks = flatten([[piece_rank for piece_name, piece_status, piece_rank in status if piece_status == 'cast'] for status in statuses])
-
-            if len(day_cast_ranks) > 0:
-                daily_best_rank[day] = min(day_cast_ranks)
-        rank_to_beat = sorted(daily_best_rank.values())[max_days-1]
-
-        for day in [day for day, n_cast in current_cast_per_day.items() if n_cast == 1 and max_possible_n[day] == 1]:
-            piece_name, piece_status, piece_rank = sorted(flatten([[(piece_name, piece_status, piece_rank)
-                                                                    for piece_name, piece_status, piece_rank in status
-                                                                    if piece_status == 'cast']
-                                                                   for status in day_statuses[day]]),
-                                                          key=lambda x: x[2])[0]
-            if piece_rank > rank_to_beat:
-                keep_drop[piece_name] = 'drop'
-    return keep_drop
+# def keep_drop_single_cast_days(keep_drop, day_statuses, max_days):
+#     # TODO: combine this with second part of default function (move it out of default, and double check max1day still works)
+#     max_possible_n = get_max_possible_n(day_statuses=day_statuses)
+#     current_cast_per_day = get_current_cast_per_day(day_statuses=day_statuses)
+#
+#     if (len([day for day, n_cast in current_cast_per_day.items() if n_cast >= 1]) > max_days and
+#             len([day for day, n_cast in current_cast_per_day.items() if n_cast == 1 and max_possible_n[day] == 1]) > 0):
+#         daily_best_rank = {}
+#         for day, statuses in day_statuses.items():
+#             day_cast_ranks = flatten([[piece_rank for piece_name, piece_status, piece_rank in status if piece_status == 'cast'] for status in statuses])
+#
+#             if len(day_cast_ranks) > 0:
+#                 daily_best_rank[day] = min(day_cast_ranks)
+#         rank_to_beat = sorted(daily_best_rank.values())[max_days-1]
+#
+#         for day in [day for day, n_cast in current_cast_per_day.items() if n_cast == 1 and max_possible_n[day] == 1]:
+#             piece_name, piece_status, piece_rank = sorted(flatten([[(piece_name, piece_status, piece_rank)
+#                                                                     for piece_name, piece_status, piece_rank in status
+#                                                                     if piece_status == 'cast']
+#                                                                    for status in day_statuses[day]]),
+#                                                           key=lambda x: x[2])[0]
+#             if piece_rank > rank_to_beat:
+#                 keep_drop[piece_name] = 'drop'
+#     return keep_drop
 
 
 def set_all_waitlist_to_drop(keep_drop, day_statuses):
@@ -347,7 +344,7 @@ def keep_drop_loop(current_pref, dancer_statuses, metadata):
     keep_drop = keep_drop_finalize(current_pref=current_pref, day_statuses=day_statuses, keep_drop=keep_drop)
 
     if set([dancer_statuses[piece]['status'] for piece, action in keep_drop.items() if action == 'keep']) == {'cast'} or set(keep_drop.values()) == {'keep'}:
-        print('cast in best option')
+        # print('cast in best option')
         return keep_drop
 
     # otherwise this keep_drop is starting point
@@ -363,7 +360,7 @@ def keep_drop_loop(current_pref, dancer_statuses, metadata):
             final_keep_drop[piece] = 'keep'
 
     if set(final_keep_drop.values()) == {'keep'}:
-        print('current casting is all keeps')
+        # print('current casting is all keeps')
         return final_keep_drop
 
     # loop through adding pieces off the waitlist
@@ -386,46 +383,117 @@ def keep_drop_loop(current_pref, dancer_statuses, metadata):
                         final_keep_drop[piece] = 'keep'
 
                 if set(final_keep_drop.values()) == {'keep'}:
-                    print('all keeps')
+                    # print('all keeps')
                     return final_keep_drop
 
-        print(f'finished looping ({count} loops), returning result')
+        # print(f'finished looping ({count} loops), returning result')
         return final_keep_drop
     else:
         # return default keep_drop of current casting
-        print('didnt loop, returning current')
+        # print('didnt loop, returning current')
         return current_keep_drop
 
 
-def sort_dancers_for_casting(all_dancer_statuses):
-    n_cast_waitlist = {dancer: {'n_cast': len([piece for piece, status in dancer_statuses.items() if status['status'] == 'cast']),
-                                'n_waitlist': len([piece for piece, status in dancer_statuses.items() if status['status'] == 'waitlist'])} for dancer, dancer_statuses in all_dancer_statuses.items()}
-    return sorted(n_cast_waitlist, key=lambda key: (-1*n_cast_waitlist[key]['n_cast'], -1*n_cast_waitlist[key]['n_waitlist']))
+def get_next_dancer_name(current_dancer_order, change_direction, all_keep_drop, mode, current_index=None):
+    # TODO: new sorting:
+    #  Sort by n_drop for the method (as saved in all_keep_drop)
+    #  Resort every time and always take the top dancer, even if already in the list.
+    #  It should never be the same dancer because n_drop gets set to 0 after a save until something changes with that dancer
+    #  Maybe also save an index in the data for refreshes and to solve the problem of when a dancer shows up multiple times in the list
+    if change_direction == 'next':
+        if current_index and current_index < len(current_dancer_order) - 1:
+            new_index = current_index + 1
+            next_dancer = current_dancer_order[new_index]
+        else:
+            new_index = len(current_dancer_order)
+            next_dancer = find_next_dancer_for_casting(all_keep_drop=all_keep_drop, mode=mode)
+
+    elif change_direction == 'previous':
+        new_index = max(current_index-1, 0)
+        next_dancer = current_dancer_order[new_index]
+    else:
+        raise ValueError('Need to set change_direction to "next" or "previous" ')
+
+    # if change_direction == 'next':
+    #     # if we're currently on a dancer, check if they're already in the list
+    #     if current_name and current_name in current_dancer_order:
+    #         # if they're in the list, find their index, if it's the last index, call function to find out who's next, otherwise grab next person from saved list
+    #         current_dancer_index = current_dancer_order.index(current_name)
+    #         if current_dancer_index == len(current_dancer_order) - 1:
+    #             next_dancer = find_next_dancer_for_casting(current_dancer_order=current_dancer_order, all_dancer_statuses=all_dancer_statuses)
+    #         else:
+    #             next_dancer = current_dancer_order[current_dancer_index+1]
+    #     else:
+    #         # if they're not in the list or no current name, just find the next person in the function
+    #         next_dancer = find_next_dancer_for_casting(current_dancer_order=current_dancer_order, all_dancer_statuses=all_dancer_statuses)
+    # elif change_direction == 'previous':
+    #     # if we're currently on a dancer, check if they're already in the list
+    #     if current_name and current_name in current_dancer_order:
+    #         # if they're in the list, find their index, if they're first in the list just return the same name, otherwise take the dancer before this one
+    #         current_dancer_index = current_dancer_order.index(current_name)
+    #         if current_dancer_index == 0:
+    #             next_dancer = current_name
+    #         else:
+    #             next_dancer = current_dancer_order[current_dancer_index-1]
+    #     else:
+    #         # if they're not in the list, take the last dancer in the list
+    #         next_dancer = current_dancer_order[-1]
+    # else:
+    #     raise ValueError('Need to set change_direction to "next" or "previous" ')
+
+    return next_dancer, new_index
 
 
-def get_next_dancer_for_casting(current_dancer_order, all_dancer_statuses):
-    next_dancer_order = sort_dancers_for_casting(all_dancer_statuses=all_dancer_statuses)
-    dancer_run_counts = Counter(current_dancer_order)
-    ind = 0
-    next_dancer = next_dancer_order[ind]
-    while next_dancer in current_dancer_order and dancer_run_counts[next_dancer] == max(dancer_run_counts.values()):
-        ind += 1
-        if ind >= len(next_dancer_order):
-            next_dancer = next_dancer_order[0]
-            break
-        next_dancer = next_dancer_order[ind]
-
-    return next_dancer
+# def sort_dancers_for_casting(all_keep_drop, mode):
+    # n_cast_waitlist = {dancer: {'n_cast': len([piece for piece, status in dancer_statuses.items() if status['status'] == 'cast']),
+    #                             'n_waitlist': len([piece for piece, status in dancer_statuses.items() if status['status'] == 'waitlist'])} for dancer, dancer_statuses in all_dancer_statuses.items()}
+    # return sorted(n_cast_waitlist, key=lambda key: (-1*n_cast_waitlist[key]['n_cast'], -1*n_cast_waitlist[key]['n_waitlist']))
 
 
-def get_dancer_casting_info(dancer_name, dancer_prefs, all_dancer_statuses, metadata, mode):
+def find_next_dancer_for_casting(all_keep_drop, mode):
+    # TODO: add sort key for number of cast vs waitlist drops
+    n_drop_per_dancer = {dancer_name: keep_drop_details[mode]['n_drop'] for dancer_name, keep_drop_details in all_keep_drop.items()}
+    return sorted(n_drop_per_dancer, key=lambda key: -1*n_drop_per_dancer[key])[0]
+    # next_dancer_order = sort_dancers_for_casting(all_dancer_statuses=all_dancer_statuses)
+    # dancer_run_counts = Counter(current_dancer_order)
+    # ind = 0
+    # next_dancer = next_dancer_order[ind]
+    # while next_dancer in current_dancer_order and dancer_run_counts[next_dancer] == max(dancer_run_counts.values()):
+    #     ind += 1
+    #     if ind >= len(next_dancer_order):
+    #         next_dancer = next_dancer_order[0]
+    #         break
+    #     next_dancer = next_dancer_order[ind]
+    #
+    # return next_dancer
+
+
+def get_dancer_casting_info(dancer_name, dancer_prefs, all_dancer_statuses, all_keep_drop, mode):
     current_index = [pref['name'] for pref in dancer_prefs].index(dancer_name)
     current_pref = dancer_prefs[current_index]
     current_statuses = all_dancer_statuses[dancer_name]
 
-    finalize = mode == 'finalize'
-    keep_drop = get_keep_drop(current_pref=current_pref, dancer_statuses=current_statuses, metadata=metadata, finalize=finalize)
+    # keep_drop = get_keep_drop(current_pref=current_pref, dancer_statuses=current_statuses, metadata=metadata)
+    keep_drop = all_keep_drop[dancer_name][mode]['keep_drop']
     return keep_drop, current_pref, current_statuses
+
+
+def get_all_keep_drop(dancer_prefs, all_dancer_statuses, metadata):
+    all_keep_drop = {}
+    for dancer_name, current_statuses in tqdm(all_dancer_statuses.items()):
+        current_pref = [pref for pref in dancer_prefs if pref['name'] == dancer_name][0]
+        # always run in standard mode
+        keep_drop = get_keep_drop(current_pref=current_pref, dancer_statuses=current_statuses, metadata=metadata)
+        all_keep_drop[dancer_name] = {mode: {'keep_drop': keep_drop[mode],
+                                             'n_drop': len([action for piece, action in keep_drop[mode].items() if action == 'drop'])}
+                                      for mode in ['standard', 'finalize']}
+
+    return all_keep_drop
+
+
+# TODO: check implementation of finalize
+#  not suggesting min days?
+
 
 # TODO: implement loop version where we only look at 1 per timeslot
 #  do this by checking the lower ranked piece first, if keep then also keep higher ranked piece, if drop need to check higher ranked piece...??

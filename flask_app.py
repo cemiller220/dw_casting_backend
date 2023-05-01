@@ -33,20 +33,7 @@ def config():
 def show_order_calculation():
     # TODO: add update times and load from file if possible
     cast_list = get_data(args=request.args, node='cast_list')
-    dancer_overlap = {}
-    allowed_next = {}
-    for cast1 in cast_list:
-        piece1 = cast1['name']
-        allowed_next[piece1] = []
-        dancer_overlap[piece1] = {}
-        for cast2 in cast_list:
-            piece2 = cast2['name']
-            if piece1 != piece2:
-                dancers1 = [dancer['name'] for dancer in cast1['cast'] if dancer['status'] == 'cast']
-                dancers2 = [dancer['name'] for dancer in cast2['cast'] if dancer['status'] == 'cast']
-                dancer_overlap[piece1][piece2] = list(set(dancers1).intersection(dancers2))
-                if len(dancer_overlap[piece1][piece2]) == 0:
-                    allowed_next[piece1].append(piece2)
+    dancer_overlap, allowed_next = calculate_dancer_overlap_available_next(cast_list=cast_list)
 
     save_data(data=dancer_overlap, args=request.args, node='dancer_overlap')
     save_data(data=allowed_next, args=request.args, node='allowed_next')
@@ -185,68 +172,90 @@ def start_casting_calculation():
     save_data(data=[], args=request.args, node='run_casting_dancer_order')
     save_data(data=[], args=request.args, node='run_casting_changes')
 
+    metadata = get_data(args=request.args, node='metadata')
+    all_cast_statuses = get_all_cast_statuses(cast_list=starting_cast_list)
+    all_dancer_statuses = get_all_dancer_statuses(choreographer_prefs=choreographer_prefs, dancer_prefs=dancer_prefs, all_cast_statuses=all_cast_statuses)
+    all_keep_drop = get_all_keep_drop(dancer_prefs=dancer_prefs, all_dancer_statuses=all_dancer_statuses, metadata=metadata)
+    save_data(data=all_keep_drop, args=request.args, node='all_keep_drop')
+
     return redirect(url_for('keep_drop_calculation', city=request.args['city'], season=request.args['season'], change_direction='next', mode=request.args['mode']))
 
 
 @app.route('/calculation/keep_drop', methods=['GET', 'PUT'])
 def keep_drop_calculation():
+    # TODO: figure out how to handle index??
     cast_list = get_data(args=request.args, node='cast_list')
     dancer_prefs = get_data(args=request.args, node='dancer_prefs')
     choreographer_prefs = get_data(args=request.args, node='choreographer_prefs')
-    metadata = get_data(args=request.args, node='metadata')
+    # metadata = get_data(args=request.args, node='metadata')
 
     all_cast_statuses = get_all_cast_statuses(cast_list=cast_list)
     all_dancer_statuses = get_all_dancer_statuses(choreographer_prefs=choreographer_prefs, dancer_prefs=dancer_prefs, all_cast_statuses=all_cast_statuses)
+    all_keep_drop = get_data(args=request.args, node='all_keep_drop')
 
+    current_dancer_order = get_data(args=request.args, node='run_casting_dancer_order')
     if 'dancer_name' in request.args.keys():
         next_dancer = request.args['dancer_name']
+        new_index = len(current_dancer_order)
     else:
-        current_dancer_order = get_data(args=request.args, node='run_casting_dancer_order')
-        if request.args['change_direction'] == 'next':
-            if 'current_name' in request.args.keys() and request.args['current_name'] in current_dancer_order:
-                current_dancer_index = current_dancer_order.index(request.args['current_name'])
-                if current_dancer_index == len(current_dancer_order) - 1:
-                    next_dancer = get_next_dancer_for_casting(current_dancer_order=current_dancer_order, all_dancer_statuses=all_dancer_statuses)
-                else:
-                    next_dancer = current_dancer_order[current_dancer_index+1]
-            else:
-                next_dancer = get_next_dancer_for_casting(current_dancer_order=current_dancer_order, all_dancer_statuses=all_dancer_statuses)
-        elif request.args['change_direction'] == 'previous':
-            if request.args['current_name'] in current_dancer_order:
-                current_dancer_index = current_dancer_order.index(request.args['current_name'])
-                if current_dancer_index == 0:
-                    next_dancer = request.args['current_name']
-                else:
-                    next_dancer = current_dancer_order[current_dancer_index-1]
-            else:
-                next_dancer = current_dancer_order[-1]
-        else:
-            raise ValueError('Need to set change_direction to "next" or "previous" ')
+        next_dancer, new_index = get_next_dancer_name(current_dancer_order=current_dancer_order, change_direction=request.args['change_direction'],
+                                                      all_keep_drop=all_keep_drop, mode=request.args['mode'], current_index=request.args.get('current_index', None))
 
     keep_drop, current_pref, current_statuses = get_dancer_casting_info(dancer_name=next_dancer, dancer_prefs=dancer_prefs,
-                                                                        all_dancer_statuses=all_dancer_statuses, metadata=metadata,
+                                                                        all_dancer_statuses=all_dancer_statuses, all_keep_drop=all_keep_drop,
                                                                         mode=request.args['mode'])
     changes = get_data(args=request.args, node='run_casting_changes')
+
     return jsonify({'keep_drop': keep_drop, 'current_pref': current_pref, 'current_statuses': current_statuses, 'changes': changes})
 
 
 @app.route('/calculation/save_pref_changes', methods=['PUT'])
 def save_pref_changes_calculation():
-    cast_list = get_data(args=request.args, node='cast_list')
     current_name = request.args['dancer_name']
     keep_drop = json.loads(request.data)['keep_drop']
 
+    # drop dancer from pieces and add next dancer where needed
+    cast_list = get_data(args=request.args, node='cast_list')
     cast_list, new_changes = drop_from_list(dancer_name=current_name, cast_list=cast_list, keep_drop=keep_drop)
-
     save_data(data=cast_list, args=request.args, node='cast_list')
 
+    # append changes to beginning of change list
     changes = get_data(args=request.args, node='run_casting_changes')
     changes = new_changes + changes
     save_data(data=changes, args=request.args, node='run_casting_changes')
 
+    # save this dancer in the dancer order
     current_dancer_order = get_data(args=request.args, node='run_casting_dancer_order')
     current_dancer_order.append(current_name)
     save_data(data=current_dancer_order, args=request.args, node='run_casting_dancer_order')
+
+    # update keep drop for all dancers that had changes
+    # current dancer --> set keep drop to all the keeps from the request.data
+    # dancers added --> rerun the keep drop to get new changes
+    all_keep_drop = get_data(args=request.args, node='all_keep_drop')
+
+    dancer_prefs = get_data(args=request.args, node='dancer_prefs')
+    choreographer_prefs = get_data(args=request.args, node='choreographer_prefs')
+    all_cast_statuses = get_all_cast_statuses(cast_list=cast_list)
+    all_dancer_statuses = get_all_dancer_statuses(choreographer_prefs=choreographer_prefs, dancer_prefs=dancer_prefs, all_cast_statuses=all_cast_statuses)
+    metadata = get_data(args=request.args, node='metadata')
+    for dancer_name in set([change['name'] for change in new_changes]):
+        current_pref = [pref for pref in dancer_prefs if pref['name'] == dancer_name][0]
+        current_statuses = all_dancer_statuses[dancer_name]
+        new_keep_drop = get_keep_drop(current_pref=current_pref, dancer_statuses=current_statuses, metadata=metadata)
+        if dancer_name == current_name:
+            for mode in ['standard', 'finalize']:
+                if mode == request.args['mode']:
+                    all_keep_drop[dancer_name][mode] = {'keep_drop': {piece: action for piece, action in keep_drop.items() if action == 'keep'}, 'n_drop': 0}
+                else:
+                    all_keep_drop[dancer_name][mode] = {'keep_drop': new_keep_drop[mode],
+                                                        'n_drop': len([action for piece, action in new_keep_drop[mode].items() if action == 'drop'])}
+        else:
+            all_keep_drop[dancer_name] = {mode: {'keep_drop': new_keep_drop[mode],
+                                                 'n_drop': len([action for piece, action in new_keep_drop[mode].items() if action == 'drop'])}
+                                          for mode in ['standard', 'finalize']}
+
+    save_data(data=all_keep_drop, args=request.args, node='all_keep_drop')
 
     # also need to update statuses
     # dancer_prefs = get_data(args=request.args, node='dancer_prefs')
@@ -274,8 +283,24 @@ def drop_all_same_times_calculation():
     changes = new_changes + changes
     save_data(data=changes, args=request.args, node='run_casting_changes')
 
-    return redirect(url_for('keep_drop_calculation', city=request.args['city'], season=request.args['season']))
+    all_keep_drop = get_data(args=request.args, node='all_keep_drop')
+    choreographer_prefs = get_data(args=request.args, node='choreographer_prefs')
+    all_cast_statuses = get_all_cast_statuses(cast_list=cast_list)
+    all_dancer_statuses = get_all_dancer_statuses(choreographer_prefs=choreographer_prefs, dancer_prefs=dancer_prefs, all_cast_statuses=all_cast_statuses)
+    for dancer_name in set([change['name'] for change in new_changes]):
+        current_pref = [pref for pref in dancer_prefs if pref['name'] == dancer_name][0]
+        current_statuses = all_dancer_statuses[dancer_name]
+        new_keep_drop = get_keep_drop(current_pref=current_pref, dancer_statuses=current_statuses, metadata=metadata)
+        all_keep_drop[dancer_name] = {mode: {'keep_drop': new_keep_drop[mode],
+                                             'n_drop': len([action for piece, action in new_keep_drop[mode].items() if action == 'drop'])}
+                                      for mode in ['standard', 'finalize']}
+    save_data(data=all_keep_drop, args=request.args, node='all_keep_drop')
+
+    return redirect(url_for('keep_drop_calculation', city=request.args['city'], season=request.args['season'], change_direction='next', mode=request.args['mode']))
 
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+
+# TODO: get rid of code duplication creating all dancer statuses?
